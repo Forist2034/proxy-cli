@@ -1,0 +1,8 @@
+[workspace]
+resolver = "2"
+members = ["cli", "conn-tester", "core", "url-parser"]
+
+[workspace.dependencies]
+uuid = { version = "1.23.1", features = ["serde"] }
+tokio = { version = "1.52.1", features = ["rt-multi-thread"] }
+http = "1.4.0"
