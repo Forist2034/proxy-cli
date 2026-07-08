@@ -327,11 +327,11 @@ impl NetContext {
 
         // wait for xray to start
         while rustix::fs::access(&sock_path_cstr, rustix::fs::Access::EXISTS).is_err()
-            || xray
+            && xray
                 .process
                 .try_wait()
                 .context("failed to wait for xray")?
-                .is_some()
+                .is_none()
         {}
 
         let ret = self
