@@ -19,4 +19,5 @@ rand = "0.10.1"
 clap = { version = "4.6.1", features = ["derive"] }
 yansi = "1.0.1"
 chrono = "0.4.44"
+url.workspace = true
 http.workspace = true

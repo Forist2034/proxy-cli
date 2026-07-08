@@ -26,6 +26,8 @@ pub enum TestError {
     Tls(#[source] std::io::Error),
     #[error("http connect error")]
     Http(#[source] hyper::Error),
+    #[error("test timeout: {0}")]
+    Timeout(#[source] tokio::time::error::Elapsed),
 }
 
 pub struct Tester {
@@ -143,7 +145,9 @@ impl Tester {
             }
         }
 
-        self.connect_https(conn).await?;
+        tokio::time::timeout(Duration::from_secs(8), self.connect_https(conn))
+            .await
+            .map_err(TestError::Timeout)??;
 
         Ok(ts.elapsed())
     }
@@ -152,12 +156,10 @@ impl Tester {
         &self,
         path: impl AsRef<std::path::Path>,
     ) -> Result<Duration, TestError> {
-        self.test_http_connect_impl(Box::new(
-            tokio::net::UnixStream::connect(path)
-                .await
-                .map_err(TestError::Io)?,
-        ))
-        .await
+        let sock = tokio::net::UnixStream::connect(path)
+            .await
+            .map_err(TestError::Io)?;
+        self.test_http_connect_impl(sock).await
     }
 }
 

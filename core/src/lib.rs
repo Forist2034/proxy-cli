@@ -14,6 +14,7 @@ pub enum ServerAddr<S> {
 }
 
 pub mod vless;
+pub mod xray;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TcpingResult {
@@ -29,29 +30,27 @@ pub enum Protocol {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Server {
-    pub name: Option<String>,
-    pub addr: ServerAddr<String>,
+pub struct Server<S> {
+    pub name: Option<S>,
+    pub addr: ServerAddr<S>,
     pub port: u16,
-    pub protocol: Protocol,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ConnectKind<SA> {
+pub enum ConnectKind<S> {
     ConnectTest {
         success: bool,
     },
     Tcping {
         success: bool,
-        server_addr: Option<SA>,
-        server_info: Option<TcpingResult>,
+        server_addr: Option<S>,
+        result: Option<TcpingResult>,
     },
     Connect,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConnectionServer<S, U> {
-    pub server: S,
+pub struct ConnectionServer<U> {
     pub url: U,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]

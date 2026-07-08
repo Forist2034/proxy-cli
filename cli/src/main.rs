@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     io::{Read, Write},
     net::{SocketAddr, ToSocketAddrs},
     os::{
@@ -8,13 +9,12 @@ use std::{
     str::FromStr,
     sync::atomic::AtomicUsize,
     time::{Duration, SystemTime},
-    usize,
 };
 
 use anyhow::Context as _;
 use chrono::Datelike;
 use clap::Parser;
-use proxy_core::{ConnectKind, ConnectionInfo, Server, TcpingResult};
+use proxy_core::{ConnectKind, ConnectionInfo, TcpingResult, xray};
 use rand::seq::SliceRandom;
 use rustix::{
     fs::{AtFlags, MemfdFlags, Mode, OFlags},
@@ -22,6 +22,8 @@ use rustix::{
 };
 use serde::{Serialize, ser::SerializeSeq};
 use tempfile::TempDir;
+
+type XrayConfig<'a> = xray::OutboundConfig<'a, xray::OutboundSettings<'a>>;
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -112,7 +114,7 @@ fn build_config(
 
 struct ServerInfo<'s> {
     url: &'s str,
-    server: Server,
+    server: XrayConfig<'s>,
 }
 
 struct Connection {
@@ -191,10 +193,7 @@ impl Connection {
             {
                 let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
                 for s in self.0 {
-                    seq.serialize_element(&proxy_core::ConnectionServer {
-                        server: &s.server,
-                        url: s.url,
-                    })?;
+                    seq.serialize_element(&proxy_core::ConnectionServer { url: s.url })?;
                 }
                 seq.end()
             }
@@ -306,7 +305,7 @@ impl NetContext {
     fn test_server(
         &mut self,
         conn: &mut Connection,
-        server: &ServerInfo,
+        server: &ServerInfo<'_>,
     ) -> anyhow::Result<Result<Duration, conn_tester::TestError>> {
         let sock_path = self.tmp_dir.path().join(format!(
             "test-{}.sock",
@@ -374,7 +373,7 @@ impl NetContext {
     fn tcping(
         &self,
         conn: &mut Connection,
-        server: &ServerInfo,
+        server: &ServerInfo<'_>,
         _: Duration,
     ) -> anyhow::Result<std::io::Result<TcpingResult>> {
         enum Addr<T> {
@@ -382,9 +381,9 @@ impl NetContext {
             Ip(SocketAddr),
         }
 
-        let (server_addr, r) = match &server.server.addr {
-            proxy_core::ServerAddr::Domain(host) => {
-                match (host.as_str(), server.server.port).to_socket_addrs() {
+        let (server_addr, r) = match &server.server.settings {
+            xray::OutboundSettings::VLess(vl) => match &vl.address {
+                xray::RemoteAddr::Domain(host) => match (*host, vl.port).to_socket_addrs() {
                     Ok(r) => (Addr::Domain(r), Ok(())),
                     Err(e) => (
                         Addr::Ip(SocketAddr::V4(std::net::SocketAddrV4::new(
@@ -393,11 +392,9 @@ impl NetContext {
                         ))),
                         Err(e),
                     ),
-                }
-            }
-            proxy_core::ServerAddr::Ip(addr) => {
-                (Addr::Ip(SocketAddr::new(*addr, server.server.port)), Ok(()))
-            }
+                },
+                xray::RemoteAddr::Ip(addr) => (Addr::Ip(SocketAddr::new(*addr, vl.port)), Ok(())),
+            },
         };
         let server_addr = match &server_addr {
             Addr::Domain(d) => d.as_slice(),
@@ -433,7 +430,7 @@ impl NetContext {
                 } else {
                     None
                 },
-                server_info: result.as_ref().ok().cloned(),
+                result: result.as_ref().ok().cloned(),
             },
         )
         .context("failed to write connection info")?;
@@ -469,13 +466,18 @@ impl<'ctx> Tester<'ctx> {
 
         let s = ServerInfo {
             url,
-            server: match url_parser::parse_url(url) {
-                Ok(v) => v,
+            server: match url_parser::vless::parse_to_xray(url) {
+                Ok(v) => xray::OutboundConfig {
+                    name: v.name,
+                    protocol: v.protocol,
+                    stream: v.stream,
+                    settings: xray::OutboundSettings::VLess(v.settings),
+                },
                 Err(_) => return Ok(None),
             },
         };
 
-        let name = s.server.name.as_ref().map_or("<unnamed>", String::as_str);
+        let name = s.server.name.as_ref().map_or("<unnamed>", Cow::as_ref);
         println!("{} {name} {url:?}", "Testing".blue());
 
         if self
@@ -557,7 +559,7 @@ impl<'ctx> Tester<'ctx> {
                 println!(
                     "{}",
                     format_args!(
-                        "[xray {}] test failed:\n{}",
+                        "[xray {}] test failed:\n{:?}",
                         conn.uuid,
                         anyhow::Error::new(e)
                     )
@@ -675,9 +677,10 @@ fn connect_subscription(
     urls.shuffle(&mut rand::rng());
     let server = {
         let mut tester = ctx.server_tester()?;
-        let mut iter = urls.get(..tries).unwrap_or(urls.as_slice()).into_iter();
+        let mut iter = urls.get(..tries).unwrap_or(urls.as_slice()).iter();
         loop {
-            if let Some(s) = tester.test(iter.next().context("No available server found")?)? {
+            let url_txt = *iter.next().context("No available server found")?;
+            if let Some(s) = tester.test(url_txt)? {
                 break s;
             }
         }
