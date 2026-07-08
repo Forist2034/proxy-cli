@@ -21,3 +21,4 @@ yansi = "1.0.1"
 chrono = "0.4.44"
 url.workspace = true
 http.workspace = true
+base64 = "0.22.1"

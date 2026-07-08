@@ -641,6 +641,8 @@ impl Context {
 enum Cmd {
     ConnectSubscription {
         #[arg(long)]
+        base64: bool,
+        #[arg(long)]
         tries: Option<usize>,
         file: String,
     },
@@ -662,10 +664,21 @@ struct Cli {
 fn connect_subscription(
     ctx: &mut Context,
     tries: usize,
+    base64: bool,
     subscription_path: &str,
 ) -> anyhow::Result<()> {
-    let sub =
-        std::fs::read_to_string(subscription_path).context("failed to read subscription file")?;
+    let sub = {
+        let raw = std::fs::read(subscription_path).context("failed to read subscription file")?;
+        String::from_utf8(if base64 {
+            use base64::prelude::*;
+            BASE64_STANDARD
+                .decode(&raw)
+                .context("failed to decode base64")?
+        } else {
+            raw
+        })
+        .context("failed to decode utf8")?
+    };
 
     let mut urls = sub
         .lines()
@@ -693,8 +706,10 @@ fn main() -> anyhow::Result<()> {
 
     let mut ctx = Context::new(&cli.log_dir, &cli.database, &cli.test_url, cli.config)?;
     match cli.cmd {
-        Cmd::ConnectSubscription { tries, file } => {
-            connect_subscription(&mut ctx, tries.unwrap_or(usize::MAX), &file)
-        }
+        Cmd::ConnectSubscription {
+            base64,
+            tries,
+            file,
+        } => connect_subscription(&mut ctx, tries.unwrap_or(usize::MAX), base64, &file),
     }
 }
