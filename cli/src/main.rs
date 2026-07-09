@@ -455,7 +455,7 @@ impl NetContext {
 }
 
 struct Tester<'ctx> {
-    log_dir: BorrowedFd<'ctx>,
+    test_log_dir: BorrowedFd<'ctx>,
     check_stmt: rusqlite::Statement<'ctx>,
     update_stmt: rusqlite::Statement<'ctx>,
     net: &'ctx mut NetContext,
@@ -489,7 +489,7 @@ impl<'ctx> Tester<'ctx> {
             return Ok(None);
         }
 
-        let mut conn = Connection::new(self.log_dir.as_fd()).context("failed to create log dir")?;
+        let mut conn = Connection::new(self.test_log_dir).context("failed to create log dir")?;
         println!("[tcping {}] start testing {name} {url:?}", conn.uuid);
         match self
             .net
@@ -529,7 +529,8 @@ impl<'ctx> Tester<'ctx> {
             }
         }
 
-        conn = Connection::new(self.log_dir.as_fd()).context("failed to create connection dir")?;
+        conn = Connection::new(self.test_log_dir.as_fd())
+            .context("failed to create connection dir")?;
         println!("[xray {}] start testing {name} {url:?}", conn.uuid);
         let result = self
             .net
@@ -572,7 +573,8 @@ impl<'ctx> Tester<'ctx> {
 }
 
 struct Context {
-    log_dir: OwnedFd,
+    test_log_dir: OwnedFd,
+    conn_log_dir: OwnedFd,
     db: rusqlite::Connection,
     net: NetContext,
 }
@@ -590,8 +592,24 @@ impl Context {
             config_path,
             log_buf: String::new(),
         };
-        let log_dir = rustix::fs::open(log_root, OFlags::PATH | OFlags::CLOEXEC, Mode::all())
-            .context("failed to open log dir")?;
+        let mut path = std::path::PathBuf::from(log_root);
+
+        path.push("test");
+        fn open_dir(path: &std::path::Path) -> Result<OwnedFd, Errno> {
+            match rustix::fs::open(path, OFlags::PATH | OFlags::CLOEXEC, Mode::empty()) {
+                Ok(v) => Ok(v),
+                Err(Errno::NOENT) => {
+                    rustix::fs::mkdir(path, Mode::all())?;
+                    rustix::fs::open(path, OFlags::PATH | OFlags::CLOEXEC, Mode::empty())
+                }
+                Err(e) => Err(e),
+            }
+        }
+        let test_log_dir = open_dir(path.as_path()).context("failed to open test log dir")?;
+
+        path.set_file_name("connect");
+        let conn_log_dir = open_dir(path.as_path()).context("failed to open connection log dir")?;
+
         let db = rusqlite::Connection::open(db).context("failed to open database")?;
         db.execute(
             concat!(
@@ -606,11 +624,16 @@ impl Context {
             [],
         )
         .context("failed to init database")?;
-        Ok(Self { log_dir, db, net })
+        Ok(Self {
+            conn_log_dir,
+            test_log_dir,
+            db,
+            net,
+        })
     }
     fn server_tester(&mut self) -> anyhow::Result<Tester<'_>> {
         Ok(Tester {
-            log_dir: self.log_dir.as_fd(),
+            test_log_dir: self.test_log_dir.as_fd(),
             check_stmt: self
                 .db
                 .prepare("select passed from last_test where url = ?1 and passed = false")
@@ -627,8 +650,8 @@ impl Context {
         })
     }
     fn connect_servers(&mut self, servers: &[ServerInfo<'_>]) -> anyhow::Result<()> {
-        let mut conn =
-            Connection::new(self.log_dir.as_fd()).context("failed to create connection dir")?;
+        let mut conn = Connection::new(self.conn_log_dir.as_fd())
+            .context("failed to create connection dir")?;
         println!(
             "{}",
             yansi::Paint::cyan(&format_args!("[xray {}] connecting to server", conn.uuid))
