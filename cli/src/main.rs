@@ -43,6 +43,9 @@ fn remove_null_field(v: serde_json::Value) -> serde_json::Value {
                 })
                 .collect(),
         ),
+        serde_json::Value::Array(a) => {
+            serde_json::Value::Array(a.into_iter().map(remove_null_field).collect())
+        }
         _ => v,
     }
 }
